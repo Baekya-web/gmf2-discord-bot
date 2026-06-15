@@ -214,7 +214,7 @@ function validateSharePayload(payload) {
   if (AUTO_APPLY_TYPES.has(requestType)) {
     return {
       ok: false,
-      status: 200,
+      status: 403,
       code: "AUTO_APPLY_POSTING_DISABLED",
       message: "Auto apply Discord posting is disabled for MVP.",
     };
@@ -353,7 +353,7 @@ async function handleShareRequest(req, res) {
     });
   }
 
-  if (!client.isReady()) {
+    if (!client.isReady()) {
     return jsonResponse(res, 503, {
       ok: false,
       code: "BOT_NOT_READY",
