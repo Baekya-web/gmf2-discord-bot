@@ -34,7 +34,8 @@ const BOT_SHARED_SECRET = (process.env.BOT_SHARED_SECRET || "").trim();
 const GMF_DISCORD_API_SECRET = (process.env.GMF_DISCORD_API_SECRET || BOT_SHARED_SECRET || "").trim();
 const SUPABASE_ANON_KEY = (process.env.SUPABASE_ANON_KEY || "").trim();
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 10000);
+const HOST = "0.0.0.0";
 const DISCORD_ALLOWED_CHANNEL_IDS = parseCsv(process.env.DISCORD_ALLOWED_CHANNEL_IDS || "");
 const DISCORD_DEFAULT_RESULT_CHANNEL_ID = (process.env.DISCORD_DEFAULT_RESULT_CHANNEL_ID || "").trim();
 const MANUAL_SHARE_TYPE = "manual_apply_share";
@@ -213,7 +214,7 @@ function validateSharePayload(payload) {
   if (AUTO_APPLY_TYPES.has(requestType)) {
     return {
       ok: false,
-      status: 200,
+      status: 403,
       code: "AUTO_APPLY_POSTING_DISABLED",
       message: "Auto apply Discord posting is disabled for MVP.",
     };
@@ -352,6 +353,14 @@ async function handleShareRequest(req, res) {
     });
   }
 
+    if (!client.isReady()) {
+    return jsonResponse(res, 503, {
+      ok: false,
+      code: "BOT_NOT_READY",
+      message: "Discord bot is not ready yet.",
+    });
+  }
+
   const link = await verifyLinkedUser(payload);
   if (!link.ok) return jsonResponse(res, link.status, { ok: false, code: link.code, message: link.message });
 
@@ -374,8 +383,15 @@ async function handleShareRequest(req, res) {
 function startHttpServer() {
   const server = http.createServer(async (req, res) => {
     try {
-      if (req.method === "GET" && req.url === "/health") {
-        return jsonResponse(res, 200, { ok: true });
+      if (req.method === "GET" && req.url === "/") {
+        return jsonResponse(res, 200, { ok: true, service: "gmf2-discord-bot" });
+      }
+      if (req.method === "GET" && (req.url === "/healthz" || req.url === "/health")) {
+        return jsonResponse(res, 200, {
+          ok: true,
+          discordReady: client.isReady(),
+          uptime: process.uptime(),
+        });
       }
       if (req.method === "POST" && (req.url === "/discord/share" || req.url === "/share")) {
         return handleShareRequest(req, res);
@@ -387,9 +403,11 @@ function startHttpServer() {
     }
   });
 
-  server.listen(PORT, () => {
-    console.log(`✅ HTTP API listening on port ${PORT}`);
+  server.listen(PORT, HOST, () => {
+    console.log(`✅ HTTP server listening on ${HOST}:${PORT}`);
   });
+
+  return server;
 }
 
 // ===== Register Slash Commands (guild-scoped for fast iteration) =====
@@ -563,13 +581,16 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // ===== Start =====
-(async () => {
-  try {
-    await registerCommands();
-    await client.login(DISCORD_TOKEN);
-    startHttpServer();
-  } catch (e) {
-    console.error("❌ Startup error:", e);
-    process.exit(1);
-  }
+(async function startDiscordBot() {
+  startHttpServer();
+
+  console.log("Discord login started");
+  client.login(DISCORD_TOKEN).catch((e) => {
+    console.error("❌ Discord login error:", e?.message || String(e));
+    console.error("HTTP server remains online; /healthz will report discordReady: false.");
+  });
+
+  registerCommands().catch((e) => {
+    console.error("❌ Slash command registration error:", e?.message || String(e));
+  });
 })();
