@@ -23,15 +23,15 @@ const {
 } = require("discord.js");
 
 // ===== ENV =====
-const DISCORD_TOKEN = (process.env.DISCORD_TOKEN || process.env.DISCORD_BOT_TOKEN || "").trim();
-const DISCORD_APP_ID = (process.env.DISCORD_APP_ID || "").trim();
+const DISCORD_TOKEN = (process.env.DISCORD_TOKEN || "").trim();
+const DISCORD_CLIENT_ID = (process.env.DISCORD_CLIENT_ID || "").trim();
 const GUILD_ID = (process.env.GUILD_ID || process.env.DISCORD_GUILD_ID || "").trim();
 
-const SUPABASE_REDEEM_URL = (process.env.SUPABASE_REDEEM_URL || "").trim();
+const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
 const SUPABASE_LEADERBOARD_URL = (process.env.SUPABASE_LEADERBOARD_URL || "").trim();
 const SUPABASE_LINK_STATUS_URL = (process.env.SUPABASE_LINK_STATUS_URL || "").trim();
 const BOT_SHARED_SECRET = (process.env.BOT_SHARED_SECRET || "").trim();
-const GMF_DISCORD_API_SECRET = (process.env.GMF_DISCORD_API_SECRET || BOT_SHARED_SECRET || "").trim();
+const GMF_DISCORD_BOT_SHARE_SECRET = (process.env.GMF_DISCORD_BOT_SHARE_SECRET || "").trim();
 const SUPABASE_ANON_KEY = (process.env.SUPABASE_ANON_KEY || "").trim();
 
 const PORT = Number(process.env.PORT || 10000);
@@ -46,20 +46,30 @@ const AUTO_APPLY_TYPES = new Set([
 ]);
 
 // ===== Required env check =====
-const missing = [];
-if (!DISCORD_TOKEN) missing.push("DISCORD_TOKEN or DISCORD_BOT_TOKEN");
-if (!DISCORD_APP_ID) missing.push("DISCORD_APP_ID");
-if (!GUILD_ID) missing.push("GUILD_ID or DISCORD_GUILD_ID");
-if (!SUPABASE_REDEEM_URL) missing.push("SUPABASE_REDEEM_URL");
-if (!BOT_SHARED_SECRET) missing.push("BOT_SHARED_SECRET");
-if (!SUPABASE_ANON_KEY) missing.push("SUPABASE_ANON_KEY");
-if (!GMF_DISCORD_API_SECRET) missing.push("GMF_DISCORD_API_SECRET or BOT_SHARED_SECRET");
+function validateEnv() {
+  const envStatus = {
+    hasDiscordToken: Boolean(DISCORD_TOKEN),
+    hasClientId: Boolean(DISCORD_CLIENT_ID),
+    hasSupabaseUrl: Boolean(SUPABASE_URL),
+    hasBotSharedSecret: Boolean(BOT_SHARED_SECRET),
+  };
 
-if (missing.length) {
-  console.error("❌ Missing env vars:", missing.join(", "));
-  console.error("👉 Check your .env file or Render environment variables.");
-  process.exit(1);
+  console.log("[env]", envStatus);
+
+  const missing = [];
+  if (!DISCORD_TOKEN) missing.push("DISCORD_TOKEN");
+  if (!DISCORD_CLIENT_ID) missing.push("DISCORD_CLIENT_ID");
+  if (!SUPABASE_URL) missing.push("SUPABASE_URL");
+  if (!BOT_SHARED_SECRET) missing.push("BOT_SHARED_SECRET");
+
+  if (missing.length) {
+    console.error("❌ Missing env vars:", missing.join(", "));
+    console.error("👉 Check your .env file or Render environment variables.");
+    process.exit(1);
+  }
 }
+
+validateEnv();
 
 function parseCsv(value) {
   return new Set(
@@ -325,7 +335,7 @@ async function validateTargetChannel(payload) {
 }
 
 async function handleShareRequest(req, res) {
-  if (getBearerToken(req) !== GMF_DISCORD_API_SECRET) {
+  if (!GMF_DISCORD_BOT_SHARE_SECRET || getBearerToken(req) !== GMF_DISCORD_BOT_SHARE_SECRET) {
     return jsonResponse(res, 401, { ok: false, code: "UNAUTHORIZED", message: "Unauthorized." });
   }
 
@@ -412,7 +422,7 @@ function startHttpServer() {
 
 // ===== Register Slash Commands (guild-scoped for fast iteration) =====
 async function registerCommands() {
-  console.log("DISCORD_APP_ID:", DISCORD_APP_ID);
+  console.log("DISCORD_CLIENT_ID:", DISCORD_CLIENT_ID);
   console.log("GUILD_ID:", GUILD_ID);
 
   const commands = [];
@@ -420,11 +430,11 @@ async function registerCommands() {
   commands.push(
     new SlashCommandBuilder()
       .setName("link")
-      .setDescription("GMF2 앱 계정을 연결합니다.")
+      .setDescription("Connect your GMF2 account to Discord")
       .addStringOption((option) =>
         option
           .setName("code")
-          .setDescription("앱에서 받은 6자리 코드")
+          .setDescription("GMF2 link code")
           .setRequired(true)
       )
       .toJSON()
@@ -441,12 +451,16 @@ async function registerCommands() {
 
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
-  await rest.put(Routes.applicationGuildCommands(DISCORD_APP_ID, GUILD_ID), {
+  const route = GUILD_ID
+    ? Routes.applicationGuildCommands(DISCORD_CLIENT_ID, GUILD_ID)
+    : Routes.applicationCommands(DISCORD_CLIENT_ID);
+
+  await rest.put(route, {
     body: commands,
   });
 
   console.log(
-    "✅ Slash commands registered:",
+    GUILD_ID ? "✅ Guild slash commands registered:" : "✅ Global slash commands registered:",
     commands.map((c) => c.name).join(", ")
   );
 }
@@ -458,7 +472,7 @@ const client = new Client({
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log("Redeem URL configured:", Boolean(SUPABASE_REDEEM_URL));
+  console.log("Supabase URL configured:", Boolean(SUPABASE_URL));
   console.log("Leaderboard URL configured:", Boolean(SUPABASE_LEADERBOARD_URL));
   console.log("Link status URL configured:", Boolean(SUPABASE_LINK_STATUS_URL));
   console.log("Allowed Discord channels configured:", DISCORD_ALLOWED_CHANNEL_IDS.size);
@@ -468,52 +482,72 @@ client.once("ready", () => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    await interaction.deferReply({ ephemeral: true });
+  console.log("[interaction]", {
+    commandName: interaction.commandName,
+    userId: interaction.user?.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+  });
 
-    // ---------- /link ----------
-    if (interaction.commandName === "link") {
+  // ---------- /link ----------
+  if (interaction.commandName === "link") {
+    try {
+      await interaction.deferReply({ ephemeral: true });
+
       const code = interaction.options.getString("code", true).trim();
 
-      if (!/^\d{6}$/.test(code)) {
-        return interaction.editReply(
-          "❌ 코드 형식이 잘못됐어요. 6자리 숫자를 입력하세요."
-        );
-      }
-
-      const payload = {
-        code,
-        discordUserId: interaction.user.id,
-        discordUsername: interaction.user.username,
-        discordDisplayName: interaction.member?.displayName ?? null,
-      };
-
-      const res = await fetch(SUPABASE_REDEEM_URL, {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/redeem-link-code`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-bot-secret": BOT_SHARED_SECRET,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          apikey: SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          code,
+          discordUserId: interaction.user.id,
+          discordUsername: interaction.user.tag,
+          discordDisplayName: interaction.member?.displayName ?? interaction.user.username,
+          guildId: interaction.guildId,
+          guildName: interaction.guild?.name ?? "",
+          channelId: interaction.channelId,
+          channelName: interaction.channel?.name ?? "",
+        }),
       });
 
-      const text = await res.text().catch(() => "");
-      const data = safeJsonParse(text);
+      const data = await res.json().catch(() => null);
+      console.log("[link] redeem response", {
+        status: res.status,
+        data,
+      });
 
-      if (!res.ok || !data.ok) {
-        const short = text.length > 1800 ? text.slice(0, 1800) + "..." : text;
-        console.log("Redeem failed:", res.status, data.error || "unknown");
+      if (!res.ok || !data?.ok) {
         return interaction.editReply(
-          `❌ 연결 실패 (HTTP ${res.status})\n\`\`\`\n${short}\n\`\`\``
+          `GMF2 연결 실패: ${data?.error ?? `HTTP ${res.status}`}`
         );
       }
 
       return interaction.editReply(
-        `✅ 연결 완료! (GMF user: ${data.gmfUserId ?? "unknown"})`
+        "GMF2와 Discord 연결이 완료되었습니다. 이제 앱에서 Discord 공유를 사용할 수 있습니다."
       );
+    } catch (error) {
+      console.error("[link] failed", error);
+      const content = "GMF2 연결 실패: 잠시 후 다시 시도해주세요.";
+
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply(content);
+        } else {
+          await interaction.reply({ content, ephemeral: true });
+        }
+      } catch (replyError) {
+        console.error("[link] failed to send error reply", replyError);
+      }
+      return;
     }
+  }
+
+  try {
+    await interaction.deferReply({ ephemeral: true });
 
     // ---------- /leaderboard ----------
     if (interaction.commandName === "leaderboard") {
