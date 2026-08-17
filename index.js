@@ -20,6 +20,7 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  MessageFlags,
 } = require("discord.js");
 
 // ===== ENV =====
@@ -299,26 +300,35 @@ async function validateTargetChannel(payload) {
     return { ok: false, status: 400, code: "GROUP_NOT_ASSIGNED", message: "Discord group channel is not configured." };
   }
 
+  // ZeroConfig Phase 2: routing is dynamic and DB-linked-destination-driven,
+  // so a guildId is required to fetch the live guild instead of a static
+  // configured one.
+  const requestedGuildId = String(payload.guildId || "").trim();
+  if (!requestedGuildId) {
+    return { ok: false, status: 400, code: "GROUP_NOT_ASSIGNED", message: "Discord group guild is not configured." };
+  }
+
+  // Allowlist semantics: a configured allowlist still restricts routing to
+  // those specific channels (operator restriction). An *empty* allowlist no
+  // longer means "deny all" -- it means "allow any DB-linked destination",
+  // since the guild/channel fetch and live permission check below are now
+  // the actual gate, not a static list.
   const allowedChannels = new Set(DISCORD_ALLOWED_CHANNEL_IDS);
   if (DISCORD_DEFAULT_RESULT_CHANNEL_ID) allowedChannels.add(DISCORD_DEFAULT_RESULT_CHANNEL_ID);
-  if (!allowedChannels.has(requestedChannelId)) {
+  if (allowedChannels.size > 0 && !allowedChannels.has(requestedChannelId)) {
     return { ok: false, status: 400, code: "CHANNEL_NOT_ALLOWED", message: "This channel is not allowed for GMF routing." };
   }
 
-  if (payload.guildId && String(payload.guildId).trim() !== GUILD_ID) {
-    return { ok: false, status: 400, code: "CHANNEL_WRONG_GUILD", message: "Discord channel is not in the configured guild." };
-  }
-
-  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  const guild = await client.guilds.fetch(requestedGuildId).catch(() => null);
   if (!guild) {
-    return { ok: false, status: 500, code: "CHANNEL_WRONG_GUILD", message: "Configured Discord guild is unavailable." };
+    return { ok: false, status: 400, code: "GUILD_NOT_AVAILABLE", message: "Configured Discord guild is unavailable." };
   }
 
   const channel = await guild.channels.fetch(requestedChannelId).catch(() => null);
   if (!channel) {
     return { ok: false, status: 400, code: "CHANNEL_NOT_FOUND", message: "Discord group channel was not found." };
   }
-  if (channel.guildId !== GUILD_ID) {
+  if (channel.guildId !== requestedGuildId) {
     return { ok: false, status: 400, code: "CHANNEL_WRONG_GUILD", message: "Discord channel is not in the configured guild." };
   }
   if (typeof channel.isTextBased !== "function" || !channel.isTextBased() || typeof channel.send !== "function") {
@@ -492,7 +502,34 @@ client.on("interactionCreate", async (interaction) => {
   // ---------- /link ----------
   if (interaction.commandName === "link") {
     try {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const NO_SEND_PERMISSION_MESSAGE =
+        "이 채널에 GMF2가 메시지를 보낼 권한이 없습니다.\n\n서버 관리자에게\nView Channel / Send Messages 권한을 요청한 뒤 다시 시도하세요.";
+
+      if (!interaction.guildId || !interaction.channelId || !interaction.guild || !interaction.channel) {
+        return interaction.editReply(NO_SEND_PERMISSION_MESSAGE);
+      }
+
+      if (
+        typeof interaction.channel.isTextBased !== "function" ||
+        !interaction.channel.isTextBased()
+      ) {
+        return interaction.editReply(NO_SEND_PERMISSION_MESSAGE);
+      }
+
+      const linkBotMember =
+        interaction.guild.members.me ||
+        (await interaction.guild.members.fetchMe().catch(() => null));
+      const linkPermissions = linkBotMember
+        ? interaction.channel.permissionsFor(linkBotMember)
+        : null;
+      if (
+        !linkPermissions?.has(PermissionFlagsBits.ViewChannel) ||
+        !linkPermissions?.has(PermissionFlagsBits.SendMessages)
+      ) {
+        return interaction.editReply(NO_SEND_PERMISSION_MESSAGE);
+      }
 
       const code = interaction.options.getString("code", true).trim();
 
@@ -526,8 +563,11 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
+      const linkedGuildName = interaction.guild?.name ?? "";
+      const linkedChannelName = interaction.channel?.name ?? "";
+
       return interaction.editReply(
-        "GMF2와 Discord 연결이 완료되었습니다. 이제 앱에서 Discord 공유를 사용할 수 있습니다."
+        `✓ GMF2 연결 완료\n\n서버: ${linkedGuildName}\n공유 채널: #${linkedChannelName}\n\n이 채널이 현재 기본 공유 위치로 설정되었습니다.\n이제 GMF2 앱으로 돌아가세요.`
       );
     } catch (error) {
       console.error("[link] failed", error);
@@ -537,7 +577,7 @@ client.on("interactionCreate", async (interaction) => {
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply(content);
         } else {
-          await interaction.reply({ content, ephemeral: true });
+          await interaction.reply({ content, flags: MessageFlags.Ephemeral });
         }
       } catch (replyError) {
         console.error("[link] failed to send error reply", replyError);
@@ -547,7 +587,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   try {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // ---------- /leaderboard ----------
     if (interaction.commandName === "leaderboard") {
@@ -606,7 +646,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!interaction.deferred && !interaction.replied) {
       return interaction.reply({
         content: `❌ 에러: ${msg}`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
