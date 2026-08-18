@@ -23,6 +23,8 @@ const {
   MessageFlags,
 } = require("discord.js");
 
+const { formatShareMessage } = require("./format");
+
 // ===== ENV =====
 const DISCORD_TOKEN = (process.env.DISCORD_TOKEN || "").trim();
 const DISCORD_CLIENT_ID = (process.env.DISCORD_CLIENT_ID || "").trim();
@@ -126,97 +128,6 @@ function getBearerToken(req) {
   const header = req.headers.authorization || "";
   const match = /^Bearer\s+(.+)$/i.exec(header);
   return match ? match[1].trim() : "";
-}
-
-function formatSignedNumber(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return String(value);
-  return numeric >= 0 ? `+${numeric}` : String(numeric);
-}
-
-function formatRank(rank) {
-  if (!rank || typeof rank !== "object") return "";
-  const parts = [];
-  if (rank.tier) parts.push(String(rank.tier));
-  if (rank.division !== undefined && rank.division !== null) parts.push(String(rank.division));
-  return parts.join(" ");
-}
-
-function formatOptionalList(title, items) {
-  if (!Array.isArray(items) || items.length === 0) return [];
-  const lines = ["", `${title}:`];
-  for (const item of items) {
-    if (!item || !item.title) continue;
-    const lpText = item.lp !== undefined && item.lp !== null ? ` (${formatSignedNumber(item.lp)})` : "";
-    lines.push(`* ${item.title}${lpText}`);
-  }
-  return lines.length > 2 ? lines : [];
-}
-
-function formatShareMessage(payload) {
-  const rankAfter = payload.rankAfter && typeof payload.rankAfter === "object"
-    ? payload.rankAfter
-    : {
-        tier: payload.tier,
-        division: payload.division,
-        lp: payload.lp ?? payload.currentLp,
-      };
-
-  const lines = ["**[GMF Daily Result]**"];
-  if (payload.discordDisplayName) lines.push(`**${payload.discordDisplayName}**`);
-  lines.push("");
-  if (payload.date) lines.push(`Date: ${payload.date}`);
-  if (payload.lpDelta !== undefined && payload.lpDelta !== null) {
-    lines.push(`LP: ${formatSignedNumber(payload.lpDelta)}`);
-  }
-
-  const rankLabel = formatRank(rankAfter) || formatRank(payload);
-  const lp = rankAfter.lp ?? payload.lp ?? payload.currentLp;
-  if (rankLabel || lp !== undefined) {
-    lines.push(`Rank: ${rankLabel || "Rank"}${lp !== undefined ? ` · ${lp}/100 LP` : ""}`);
-  }
-
-  const breakdown = payload.breakdown || {};
-  const breakdownLines = [
-    ["Main Quest", breakdown.mainQuestLP ?? payload.mainQuestLP],
-    ["Sub Quest", breakdown.subQuestLP ?? payload.subQuestLP],
-    ["Nutrition", breakdown.nutritionLP ?? payload.nutritionLP],
-    ["Habit", breakdown.habitLP ?? payload.habitLP],
-  ].filter(([, value]) => value !== undefined && value !== null);
-
-  if (breakdownLines.length) {
-    lines.push("", "Breakdown:");
-    for (const [label, value] of breakdownLines) {
-      lines.push(`${label} ${formatSignedNumber(value)}`);
-    }
-  }
-
-  const details = payload.details && typeof payload.details === "object" ? payload.details : {};
-  lines.push(...formatOptionalList("Sub Quests", details.completedSubQuests));
-  lines.push(...formatOptionalList("Habits", details.completedHabits));
-
-  if (details.nutrition && typeof details.nutrition === "object") {
-    lines.push("", `Nutrition: ${details.nutrition.status || "Unknown"}`);
-    if (details.nutrition.calories !== undefined && details.nutrition.calories !== null) {
-      lines.push(`Calories: ${details.nutrition.calories} kcal`);
-    }
-    if (details.nutrition.protein !== undefined && details.nutrition.protein !== null) {
-      lines.push(`Protein: ${details.nutrition.protein} g`);
-    }
-  }
-
-  if (details.wakeCheckIn && typeof details.wakeCheckIn === "object") {
-    const wakeParts = [details.wakeCheckIn.status, details.wakeCheckIn.checkedAt].filter(Boolean);
-    if (wakeParts.length) lines.push("", `Wake: ${wakeParts.join(" · ")}`);
-  }
-
-  if (payload.promoted) {
-    const before = formatRank(payload.rankBefore);
-    const after = formatRank(rankAfter);
-    if (before || after) lines.push("", `Promotion: ${before || "Before"} → ${after || "After"}`);
-  }
-
-  return lines.join("\n").trim();
 }
 
 function validateSharePayload(payload) {
@@ -391,6 +302,8 @@ async function handleShareRequest(req, res) {
   }
 
   try {
+    // The bot is the sole message formatter; payload.content (if the caller
+    // sends it) is intentionally never used here -- see format.js.
     const sentMessage = await target.channel.send({ content: formatShareMessage(payload) });
     console.log("Share sent", { userId: payload.userId, channelId: mask(target.channelId), groupId: payload.discordGroupId || null });
     return jsonResponse(res, 200, { ok: true, channelId: target.channelId, messageId: sentMessage.id });
