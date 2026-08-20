@@ -50,6 +50,46 @@ test("shareKind main_quest_clear renders the Main Quest Clear title", () => {
   assert.match(msg, /^\*\*\[GMF Main Quest Clear\]\*\*/);
 });
 
+// Follow-up F-2 companion: main_quest_clear breakdown is narrowed to the
+// Main Quest line only, even when the caller's payload sends the other
+// breakdown fields as 0 (required by the client type, not meaningful here).
+test("main_quest_clear breakdown shows only Main Quest, even with 0-valued siblings", () => {
+  const msg = formatShareMessage({
+    ...basePayload(),
+    breakdown: { mainQuestLP: 20, subQuestLP: 0, nutritionLP: 0, habitLP: 0, totalLP: 20 },
+    details: { shareKind: "main_quest_clear" },
+  });
+  assert.match(msg, /Main Quest \+20/);
+  assert.doesNotMatch(msg, /Sub Quest/);
+  assert.doesNotMatch(msg, /Nutrition/);
+  assert.doesNotMatch(msg, /Core Quest Completion/);
+});
+
+// Same shareKind, but coreCompletionLP is also present (shouldn't happen in
+// practice for this shareKind, but the narrowing must still hold -- it drops
+// the candidate before the 0/undefined filter even runs).
+test("main_quest_clear breakdown narrowing excludes coreCompletionLP even if sent", () => {
+  const msg = formatShareMessage({
+    ...basePayload(),
+    breakdown: { mainQuestLP: 20, coreCompletionLP: 3 },
+    details: { shareKind: "main_quest_clear" },
+  });
+  assert.match(msg, /Main Quest \+20/);
+  assert.doesNotMatch(msg, /Core Quest Completion/);
+});
+
+// Other shareKinds must be completely unaffected by the narrowing branch.
+test("daily_result breakdown rendering is unchanged by the main_quest_clear narrowing", () => {
+  const msg = formatShareMessage({
+    ...basePayload(),
+    breakdown: { mainQuestLP: 20, subQuestLP: 4, nutritionLP: 1, habitLP: 0, totalLP: 25 },
+    details: { shareKind: "daily_result" },
+  });
+  assert.match(msg, /Main Quest \+20/);
+  assert.match(msg, /Sub Quest \+4/);
+  assert.match(msg, /Nutrition \+1/);
+});
+
 // 7. Missing/unrecognized shareKind falls back to the Daily Result title.
 test("missing or unknown shareKind falls back to the Daily Result title", () => {
   const noKind = formatShareMessage(basePayload());

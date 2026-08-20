@@ -76,14 +76,25 @@ function formatShareMessage(payload) {
   }
 
   const breakdown = payload.breakdown || {};
-  const breakdownLines = [
-    ["Main Quest", breakdown.mainQuestLP ?? payload.mainQuestLP],
-    ["Sub Quest", breakdown.subQuestLP ?? payload.subQuestLP],
-    // Forward-compatible: only rendered once the caller actually sends it.
-    ["Core Quest Completion", breakdown.coreCompletionLP ?? payload.coreCompletionLP],
-    ["Nutrition", breakdown.nutritionLP ?? payload.nutritionLP],
-    // No "Habit" entry: Rulebook LP module v1.2 §6.3, Habit LP is always 0.
-  ].filter(([, value]) => value !== undefined && value !== null);
+  // Follow-up F-2 companion: main_quest_clear shares only ever carry a real
+  // mainQuestLP -- subQuestLP/nutritionLP/habitLP are sent as 0 because the
+  // caller's payload type requires them, not because they're meaningful for
+  // this shareKind. Rather than filtering those 0s out (indistinguishable
+  // from a genuine 0 on other shareKinds), main_quest_clear never puts them
+  // in the candidate list at all. Every other shareKind's breakdown
+  // candidates are unchanged.
+  const breakdownLines = (
+    details.shareKind === "main_quest_clear"
+      ? [["Main Quest", breakdown.mainQuestLP ?? payload.mainQuestLP]]
+      : [
+          ["Main Quest", breakdown.mainQuestLP ?? payload.mainQuestLP],
+          ["Sub Quest", breakdown.subQuestLP ?? payload.subQuestLP],
+          // Forward-compatible: only rendered once the caller actually sends it.
+          ["Core Quest Completion", breakdown.coreCompletionLP ?? payload.coreCompletionLP],
+          ["Nutrition", breakdown.nutritionLP ?? payload.nutritionLP],
+          // No "Habit" entry: Rulebook LP module v1.2 §6.3, Habit LP is always 0.
+        ]
+  ).filter(([, value]) => value !== undefined && value !== null);
 
   if (breakdownLines.length) {
     lines.push("", "Breakdown:");
